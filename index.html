@@ -1,5 +1,42 @@
 <!doctype html>
 <meta charset="utf-8">
+<script>
+(function(){
+  "use strict";
+  // ---- Bespoken Training account gate ----
+  // Every assessment now requires a free Bespoken Training account first.
+  // If we don't already have a session (either stored from a prior visit,
+  // or just handed back to us in the URL fragment after signing in), send
+  // the visitor to sign up/sign in, then bounce them right back here.
+  // TODO: swap LOGIN_URL to https://bespokentraining.com/ once that domain
+  // is pointed at the bespoken-training app (it currently still shows the
+  // GoDaddy "coming soon" placeholder).
+  var STORAGE_KEY = 'bt-session';
+  var LOGIN_URL = 'https://bespokenesl-a11y.github.io/bespoken-training/';
+
+  function loadSession(){
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); }
+    catch(e){ return null; }
+  }
+  function saveSession(s){ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }
+
+  if (location.hash && location.hash.indexOf('bt_access_token=') !== -1) {
+    var params = new URLSearchParams(location.hash.slice(1));
+    var accessToken = params.get('bt_access_token');
+    var refreshToken = params.get('bt_refresh_token');
+    if (accessToken) {
+      saveSession({ access_token: accessToken, refresh_token: refreshToken, issued_at: Date.now() });
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  }
+
+  var session = loadSession();
+  if (!session || !session.access_token) {
+    var returnTo = encodeURIComponent(location.href.split('#')[0]);
+    location.href = LOGIN_URL + '?return_to=' + returnTo;
+  }
+})();
+</script>
 <title>Vocabulary Placement Test — Free Beta</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
