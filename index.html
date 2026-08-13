@@ -3,14 +3,14 @@
 <script>
 (function(){
   "use strict";
-  // ---- Bespoken Training account gate ----
   // Every assessment now requires a free Bespoken Training account first.
-  // If we don't already have a session (either stored from a prior visit,
-  // or just handed back to us in the URL fragment after signing in), send
-  // the visitor to sign up/sign in, then bounce them right back here.
-  // TODO: swap LOGIN_URL to https://bespokentraining.com/ once that domain
-  // is pointed at the bespoken-training app (it currently still shows the
-  // GoDaddy "coming soon" placeholder).
+  // Unauthenticated visitors are bounced to the login/signup app (with
+  // return_to set to this page and the tokens delivered back in the URL
+  // fragment after signing in), then bounced right back here.
+  //
+  // LOGIN_URL below is the permanent address for that app (GitHub Pages).
+  // It intentionally does NOT point at bespokentraining.com -- that domain
+  // is reserved for a separate, unrelated future vocational-training business.
   var STORAGE_KEY = 'bt-session';
   var LOGIN_URL = 'https://bespokenesl-a11y.github.io/bespoken-training/';
 
