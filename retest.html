@@ -9,6 +9,18 @@
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); }
     catch(e){ return null; }
   }
+  function saveSession(s){ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }
+
+  if (location.hash && location.hash.indexOf('bt_access_token=') !== -1) {
+    var params = new URLSearchParams(location.hash.slice(1));
+    var accessToken = params.get('bt_access_token');
+    var refreshToken = params.get('bt_refresh_token');
+    if (accessToken) {
+      saveSession({ access_token: accessToken, refresh_token: refreshToken, issued_at: Date.now() });
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  }
+
   var session = loadSession();
   if (!session || !session.access_token) {
     var returnTo = encodeURIComponent(location.href.split('#')[0]);
