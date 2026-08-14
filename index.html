@@ -724,6 +724,48 @@ const DATA = {
 const SUPABASE_URL = 'https://zqcwhsxaawmrckbglcim.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_0x-TxeUzQaB1_rsP7bnrRw_jBR9icOD';
 const BACKEND_CONFIGURED = !SUPABASE_URL.includes('YOUR-PROJECT');
+const LOGIN_URL = 'https://bespokenesl-a11y.github.io/bespoken-training/';
+const STORAGE_KEY = 'bt-session';
+
+function loadSession(){
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); }
+  catch(e){ return null; }
+}
+
+let currentUser = null; // { id, email, fullName } - populated by loadCurrentUser() before first render
+
+async function loadCurrentUser(){
+  const session = loadSession();
+  if(!session || !session.access_token) return null;
+  try{
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` }
+    });
+    if(!res.ok) return null;
+    const user = await res.json();
+    let fullName = '';
+    try{
+      const pRes = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=full_name`, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` }
+      });
+      if(pRes.ok){ const rows = await pRes.json(); fullName = (rows[0] && rows[0].full_name) || ''; }
+    }catch(e){ /* non-fatal, fall back to email below */ }
+    return { id: user.id, email: user.email, fullName: fullName };
+  }catch(e){ return null; }
+}
+
+async function determineTestType(userId){
+  // First-ever full placement diagnostic for this account is 'pre'; any
+  // retake through this same app after that is a full 'post' retest.
+  try{
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/placement_results?user_id=eq.${encodeURIComponent(userId)}&test_type=eq.pre&select=id&limit=1`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
+    });
+    if(!res.ok) return 'pre';
+    const rows = await res.json();
+    return (rows && rows.length) ? 'post' : 'pre';
+  }catch(e){ return 'pre'; }
+}
 
 const SPEAKER_ICON = '<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-.77-3.29-2-4.34v8.67c1.23-1.05 2-2.56 2-4.33zM14 3.23v2.06c2.89 1.2 5 4.03 5 7.71s-2.11 6.51-5 7.71v2.06c4.01-1.14 7-4.82 7-9.77s-2.99-8.63-7-9.77z"/></svg>';
 
@@ -734,9 +776,9 @@ const PLACEMENT_THRESHOLD = 90;
 const TOTAL_QUESTIONS = 100; // fixed total, split evenly across whichever categories are selected
 
 let state = {
-  phase: 'username', // username | username-taken | intro | running | saving | done
+  phase: 'loading', // loading | account-error | intro | running | saving | done
   username: '',
-  usernameError: '',
+  testType: null, // 'pre' | 'post' - decided once, right before the first save attempt
   selectedCats: CORE_CATS.slice(), // SAT + GRE on by default; optional tracks can be added on the intro screen
   questions: [], answers: [], qIndex: 0,
   results: null,
@@ -819,34 +861,18 @@ function speak(text, btn){
   window.speechSynthesis.speak(utter);
 }
 
-/* ---------- username validation & backend calls ---------- */
-function isValidUsername(u){
-  return /^[a-zA-Z0-9_-]{3,24}$/.test(u);
-}
-
-async function checkUsernameTaken(username){
-  if(!BACKEND_CONFIGURED) return false;
-  try{
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/placement_results?username=eq.${encodeURIComponent(username)}&select=username`, {
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
-    });
-    if(!res.ok) return false;
-    const rows = await res.json();
-    return rows.length > 0;
-  }catch(e){ return false; }
-}
-
-async function saveResultsToBackend(username, results){
+/* ---------- backend calls ---------- */
+async function saveResultsToBackend(userId, username, testType, results){
   if(!BACKEND_CONFIGURED) throw new Error('Backend not configured yet');
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/placement_results?on_conflict=username`, {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/placement_results`, {
     method: 'POST',
     headers: {
       apikey: SUPABASE_ANON_KEY,
       Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
       'Content-Type': 'application/json',
-      Prefer: 'resolution=merge-duplicates,return=representation'
+      Prefer: 'return=representation'
     },
-    body: JSON.stringify([{ username, results }])
+    body: JSON.stringify([{ username, user_id: userId, test_type: testType, results }])
   });
   if(!res.ok){
     const text = await res.text().catch(()=> '');
@@ -856,40 +882,6 @@ async function saveResultsToBackend(username, results){
 }
 
 /* ---------- flow ---------- */
-let usernameCheckInFlight = false;
-async function submitUsername(){
-  if(usernameCheckInFlight) return; // ignore duplicate/overlapping calls (e.g. Enter + click firing together)
-  const input = document.getElementById('username-input');
-  const val = (input ? input.value : state.username).trim();
-  state.username = val;
-  if(!isValidUsername(val)){
-    state.usernameError = 'Username must be 3-24 characters: letters, numbers, underscores, or hyphens only.';
-    render();
-    return;
-  }
-  state.usernameError = '';
-  usernameCheckInFlight = true;
-  render(); // show a brief "checking..." isn't essential, keep simple
-  const taken = await checkUsernameTaken(val);
-  usernameCheckInFlight = false;
-  if(taken){
-    state.phase = 'username-taken';
-  } else {
-    state.phase = 'intro';
-  }
-  render();
-}
-
-function retakeAsThisUser(){
-  state.phase = 'intro';
-  render();
-}
-
-function backToUsername(){
-  state.phase = 'username';
-  state.usernameError = '';
-  render();
-}
 
 function startTest(){
   const cats = state.selectedCats;
@@ -944,7 +936,8 @@ async function finishTest(){
   state.saveError = null;
   render();
   try{
-    await saveResultsToBackend(state.username, results);
+    state.testType = await determineTestType(currentUser.id);
+    await saveResultsToBackend(currentUser.id, state.username, state.testType, results);
     state.saveError = null;
   }catch(e){
     state.saveError = e.message;
@@ -957,7 +950,7 @@ async function retrySave(){
   state.saveError = null;
   render();
   try{
-    await saveResultsToBackend(state.username, state.results);
+    await saveResultsToBackend(currentUser.id, state.username, state.testType, state.results);
   }catch(e){
     state.saveError = e.message;
   }
@@ -965,28 +958,19 @@ async function retrySave(){
 }
 
 /* ---------- rendering ---------- */
-function usernameHTML(){
+function loadingHTML(){
   return `<div class="test-card test-start">
-    <h2>Start with a username</h2>
-    <p>You'll use this exact username later to log into training — your placement results will already be linked to it.</p>
-    <div class="field-row">
-      <input type="text" id="username-input" class="username-input" placeholder="Choose a username (3-24 characters)" value="${escHtml(state.username)}" maxlength="24" autocomplete="off">
-    </div>
-    ${state.usernameError ? `<div class="fb-bad">${state.usernameError}</div>` : ''}
-    ${!BACKEND_CONFIGURED ? `<div class="fb-bad">Note: this page isn't connected to a results database yet, so scores won't be saved right now.</div>` : ''}
-    <div class="result-actions" style="margin-top:6px;">
-      <button class="btn-accent" id="username-continue">Continue</button>
-    </div>
+    <h2>One moment…</h2>
+    <p>Checking your account.</p>
   </div>`;
 }
 
-function usernameTakenHTML(){
+function accountErrorHTML(){
   return `<div class="test-card test-start">
-    <h2>That username is already in use</h2>
-    <p>If this is you retaking the test, continuing will update your saved results under <span class="username-display">${escHtml(state.username)}</span>. If it's not you, pick a different username instead.</p>
+    <h2>We couldn't verify your account</h2>
+    <p>Your sign-in may have expired. Please sign in again to take the placement test.</p>
     <div class="result-actions">
-      <button class="btn-accent" id="retake-continue">This is me — continue</button>
-      <button class="btn-ghost" id="pick-different">Pick a different username</button>
+      <a class="btn-accent" href="${LOGIN_URL}?return_to=${encodeURIComponent(location.href.split('#')[0])}">Sign in again</a>
     </div>
   </div>`;
 }
@@ -1008,7 +992,6 @@ function introHTML(){
     <p class="sub" style="margin-top:10px;">Testing <strong>${n}</strong> track${n===1?'':'s'} today — ${perTrackNote}.</p>
     <div class="result-actions">
       <button class="btn-accent" id="start-test">Start the placement test</button>
-      <button class="btn-ghost" id="intro-back">Use a different username</button>
     </div>
   </div>`;
 }
@@ -1068,10 +1051,9 @@ function doneHTML(){
     : `All ${testedCats.length} track${testedCats.length===1?'':'s'} you tested cleared the ${PLACEMENT_THRESHOLD}% threshold, so training is optional everywhere. Any words you missed will still be there in Training if you want to polish them up.`;
   const saveStatusHTML = state.saveError
     ? `<div class="fb-bad">Your results were scored, but saving them failed (${escHtml(state.saveError)}). <button class="btn-ghost" id="retry-save" style="margin-left:6px;">Retry save</button></div>`
-    : (BACKEND_CONFIGURED ? `<div class="fb-ok">✓ Your results are saved under this username.</div>` : '');
+    : (BACKEND_CONFIGURED ? `<div class="fb-ok">✓ Saved to your Bespoken English account (${escHtml((currentUser && currentUser.email) || '')}).</div>` : '');
   return `<div class="test-card" style="margin-bottom:20px;">
     <div class="q-prompt">Placement results</div>
-    <div class="username-callout">Remember your username: <span class="username-display">${escHtml(state.username)}</span> — use it when you enroll and your results will be waiting for you.</div>
     ${saveStatusHTML}
     <table class="history-table">
       <thead><tr><th>Track</th><th>Score</th><th>Percent</th><th>Status</th></tr></thead>
@@ -1086,8 +1068,8 @@ function doneHTML(){
 
 function render(){
   const root = document.getElementById('root');
-  if(state.phase==='username') root.innerHTML = usernameHTML();
-  else if(state.phase==='username-taken') root.innerHTML = usernameTakenHTML();
+  if(state.phase==='loading') root.innerHTML = loadingHTML();
+  else if(state.phase==='account-error') root.innerHTML = accountErrorHTML();
   else if(state.phase==='intro') root.innerHTML = introHTML();
   else if(state.phase==='running') root.innerHTML = questionHTML();
   else if(state.phase==='saving') root.innerHTML = savingHTML();
@@ -1101,23 +1083,8 @@ function wire(){
     btn.onclick = (e)=>{ e.stopPropagation(); speak(btn.getAttribute('data-say'), btn); };
   });
 
-  const unameBtn = document.getElementById('username-continue');
-  if(unameBtn) unameBtn.onclick = submitUsername;
-  const unameInput = document.getElementById('username-input');
-  if(unameInput){
-    unameInput.focus();
-    unameInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submitUsername(); });
-  }
-
-  const retakeContinue = document.getElementById('retake-continue');
-  if(retakeContinue) retakeContinue.onclick = retakeAsThisUser;
-  const pickDifferent = document.getElementById('pick-different');
-  if(pickDifferent) pickDifferent.onclick = backToUsername;
-
   const startBtn = document.getElementById('start-test');
   if(startBtn) startBtn.onclick = startTest;
-  const introBack = document.getElementById('intro-back');
-  if(introBack) introBack.onclick = backToUsername;
 
   root.querySelectorAll('.cat-check-input').forEach(cb=>{
     cb.onchange = ()=>{
@@ -1144,5 +1111,16 @@ function wire(){
   if(retakeTestBtn) retakeTestBtn.onclick = ()=>{ state.phase='intro'; render(); };
 }
 
-render();
+(async function init(){
+  render(); // show the loading state immediately while we check the account
+  currentUser = await loadCurrentUser();
+  if(!currentUser){
+    state.phase = 'account-error';
+    render();
+    return;
+  }
+  state.username = currentUser.fullName ? currentUser.fullName.split(' ')[0] : (currentUser.email || 'there').split('@')[0];
+  state.phase = 'intro';
+  render();
+})();
 </script>
