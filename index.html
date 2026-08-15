@@ -881,6 +881,43 @@ async function saveResultsToBackend(userId, username, testType, results){
   return res.json();
 }
 
+async function requestSubscription(){
+  const btn = document.getElementById('begin-training-btn');
+  const msgEl = document.getElementById('beginTrainingMsg');
+  if(btn){ btn.disabled = true; btn.textContent = 'Requesting…'; }
+  try{
+    if(!BACKEND_CONFIGURED) throw new Error('Backend not configured yet');
+    if(!currentUser) throw new Error('Not signed in');
+    const session = loadSession();
+    if(!session || !session.access_token) throw new Error('Not signed in');
+    const checkRes = await fetch(`${SUPABASE_URL}/rest/v1/subscription_requests?user_id=eq.${encodeURIComponent(currentUser.id)}&track=eq.vocabulary&status=in.(pending,invoiced)&select=id`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session.access_token}` }
+    });
+    const existing = checkRes.ok ? await checkRes.json() : [];
+    if(!existing || !existing.length){
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/subscription_requests`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=minimal'
+        },
+        body: JSON.stringify([{ user_id: currentUser.id, email: currentUser.email, full_name: currentUser.fullName, track: 'vocabulary' }])
+      });
+      if(!res.ok){
+        const text = await res.text().catch(()=> '');
+        throw new Error(`Request failed (${res.status}): ${text}`);
+      }
+    }
+    if(btn){ btn.textContent = 'Request received'; }
+    if(msgEl){ msgEl.innerHTML = `<div class="report-verdict met">Thanks! We'll email you a PayPal invoice for your first month's subscription. Once it's paid, you'll receive an access code so you can continue into your training.</div>`; }
+  }catch(e){
+    if(btn){ btn.disabled = false; btn.textContent = 'Ready to begin training?'; }
+    if(msgEl){ msgEl.innerHTML = `<div class="fb-bad">Something went wrong requesting your subscription (${escHtml(e.message || '')}). Please try again.</div>`; }
+  }
+}
+
 /* ---------- flow ---------- */
 
 function startTest(){
@@ -1059,10 +1096,10 @@ function doneHTML(){
       <thead><tr><th>Track</th><th>Score</th><th>Percent</th><th>Status</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    <div class="report-verdict ${belowThreshold.length ? 'notmet' : 'met'}">${recommendation}</div>
     <div class="result-actions">
-      <button class="btn-ghost" id="retake-test">Take it again</button>
+      <button class="btn-accent" id="begin-training-btn">Ready to begin training?</button>
     </div>
+    <div id="beginTrainingMsg"></div>
   </div>`;
 }
 
@@ -1107,8 +1144,8 @@ function wire(){
 
   const retryBtn = document.getElementById('retry-save');
   if(retryBtn) retryBtn.onclick = retrySave;
-  const retakeTestBtn = document.getElementById('retake-test');
-  if(retakeTestBtn) retakeTestBtn.onclick = ()=>{ state.phase='intro'; render(); };
+  const beginTrainingBtn = document.getElementById('begin-training-btn');
+  if(beginTrainingBtn) beginTrainingBtn.onclick = requestSubscription;
 }
 
 (async function init(){
